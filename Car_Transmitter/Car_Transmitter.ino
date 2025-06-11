@@ -1,155 +1,69 @@
-//These are needed for MPU
-#include "I2Cdev.h"
-#include "MPU6050_6Axis_MotionApps20.h"
-
-//These are need for RF handlling
+#include <Wire.h>
 #include <SPI.h>
-#include <nRF24L01.h>
 #include <RF24.h>
+#include <MPU9250_asukiaaa.h>
 
-//#define PRINT_DEBUG   //Uncomment this line if you want to print the MPU6050 initialization information on serial monitor
+RF24 radio(8, 9);  // CE, CSN
+const byte address[6] = "00001";
+MPU9250_asukiaaa mySensor;
 
-// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
-// is used in I2Cdev.h
-#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-    #include "Wire.h"
-#endif
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  mySensor.setWire(&Wire);
+  mySensor.beginAccel();
+  mySensor.beginGyro();
 
-// MPU control/status vars
-MPU6050 mpu;
-bool dmpReady = false;  // set true if DMP init was successful
-uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
-uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
-uint8_t fifoBuffer[64]; // FIFO storage buffer
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-
-// RF control
-const uint64_t pipeOut = 0xF9E8F0F0E1LL;   //IMPORTANT: The same as in the receiver 0xF9E8F0F0E1LL
-RF24 radio(8, 9); // select CE,CSN pin
-
-struct PacketData 
-{
-  byte xAxisValue;
-  byte yAxisValue;
-} data;
-
-void setupRadioTransmitter()
-{
   radio.begin();
-  radio.setDataRate(RF24_250KBPS);
-  radio.openWritingPipe(pipeOut);
-  radio.stopListening(); //start the radio comunication for Transmitter  
-
-  data.xAxisValue = 127; // Center
-  data.yAxisValue = 127; // Center 
+  radio.openWritingPipe(address);
+  radio.setPALevel(RF24_PA_LOW);
+  radio.stopListening();
 }
 
+void loop() {
+  mySensor.accelUpdate();  // Update accelerometer data
 
-void setupMPU()
-{
-  // join I2C bus (I2Cdev library doesn't do this automatically)
-  #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-      Wire.begin();
-      Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
-  #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
-      Fastwire::setup(400, true);
-  #endif
+  // Print raw sensor data for debugging
+  float x = mySensor.accelX();
+  float y = mySensor.accelY();
+  float z = mySensor.accelZ();
+  Serial.print("X: ");
+  Serial.print(x);
+  Serial.print(" Y: ");
+  Serial.print(y);
+  Serial.print(" Z: ");
+  Serial.println(z);
 
-  #ifdef PRINT_DEBUG
-    // initialize serial communication
-    Serial.begin(115200);
-    while (!Serial); // wait for Leonardo enumeration, others continue immediately
-    // initialize device
-    Serial.println(F("Initializing I2C devices..."));
-  #endif
-  
-  mpu.initialize();
-
-  #ifdef PRINT_DEBUG  
-    // verify connection
-    Serial.println(F("Testing device connections..."));
-    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
-    // wait for ready
-    Serial.println(F("\nSend any character to begin DMP programming and demo: "));
-    while (Serial.available() && Serial.read()); // empty buffer
-    while (!Serial.available());                 // wait for data
-    while (Serial.available() && Serial.read()); // empty buffer again
-    // load and configure the DMP
-    Serial.println(F("Initializing DMP..."));
-  #endif
-  
-  devStatus = mpu.dmpInitialize();
-  
-  // make sure it worked (returns 0 if so)
-  if (devStatus == 0) 
-  {
-      // Calibration Time: generate offsets and calibrate our MPU6050
-      mpu.CalibrateAccel(6);
-      mpu.CalibrateGyro(6);
-      
-      #ifdef PRINT_DEBUG      
-        mpu.PrintActiveOffsets();
-        // turn on the DMP, now that it's ready
-        Serial.println(F("Enabling DMP..."));
-      #endif
-      mpu.setDMPEnabled(true);
-  
-      // set our DMP Ready flag so the main loop() function knows it's okay to use it
-      #ifdef PRINT_DEBUG      
-        Serial.println(F("DMP ready! Waiting for first interrupt..."));
-      #endif
-      dmpReady = true;
-  
-      // get expected DMP packet size for later comparison
-      packetSize = mpu.dmpGetFIFOPacketSize();
-  } 
-  else 
-  {
-      // ERROR!
-      // 1 = initial memory load failed
-      // 2 = DMP configuration updates failed
-      // (if it's going to break, usually the code will be 1)
-      #ifdef PRINT_DEBUG       
-        Serial.print(F("DMP Initialization failed (code "));
-        Serial.print(devStatus);
-        Serial.println(F(")"));
-      #endif
+  if (y > 0.3) {  // If Y is above threshold, send "forward" command
+    const char text[] = "forward";
+    radio.write(&text, sizeof(text));
+    Serial.println("Sent: forward");
   }
-}
 
-
-void setup()
-{
-  //This is to set up radio transmitter for rf
-  setupRadioTransmitter();   
-  //This is to set up MPU6050 sensor
-  setupMPU();
-}
-
-void loop() 
-{
-  // if programming failed, don't try to do anything
-  if (!dmpReady) return;
-  // read a packet from FIFO. Get the Latest packet
-  if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) 
-  {  
-    // display Euler angles in degrees
-    mpu.dmpGetQuaternion(&q, fifoBuffer);
-    mpu.dmpGetGravity(&gravity, &q);
-    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-
-    int xAxisValue = constrain(ypr[2] * 180/M_PI, -90, 90);
-    int yAxisValue = constrain(ypr[1] * 180/M_PI, -90, 90);
-    data.xAxisValue = map(xAxisValue, -90, 90, 0, 254); 
-    data.yAxisValue = map(yAxisValue, -90, 90, 254, 0);
-
-    radio.write(&data, sizeof(PacketData));
-
-    #ifdef PRINT_DEBUG  
-      Serial.println(xAxisValue);  
-      Serial.println(yAxisValue);        
-    #endif
+  else if (y < -0.3 ) {
+    const char text[] = "backward";
+    radio.write(&text, sizeof(text));
+    Serial.println("Sent: backward");
   }
+
+  else if(x > 0.3) {
+    const char text[] = "right";
+    radio.write(&text, sizeof(text));
+    Serial.println("Sent: right");
+  }
+
+  else if(x < -0.3){
+    const char text[] = "left";
+    radio.write(&text, sizeof(text));
+    Serial.println("Sent: left");
+  }
+
+  else {
+    const char text[] = "stop";
+    radio.write(&text, sizeof(text));
+    Serial.println("Sent: stop");
+  }
+  
+
+  delay(100);  // Delay to make the output readable
 }

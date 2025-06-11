@@ -1,139 +1,91 @@
-#include <SPI.h>
+#include <RF24_config.h>
 #include <nRF24L01.h>
+#include <printf.h>
+#include <SPI.h>
 #include <RF24.h>
 
-//#define PRINT_DEBUG   //Uncomment this line if you want to print the values on serial monitor
+RF24 radio(9, 8); // CE , CSN
+const byte address[6] = "00001";
 
-#define SIGNAL_TIMEOUT 500  // This is signal timeout in milli seconds.
-#define MAX_MOTOR_SPEED 200
+int in1 = 2;
+int in2 = 3;
+int in3 = 4;
+int in4 = 7;
+int ena = 5;
+int enb = 6;
 
-const uint64_t pipeIn = 0xF9E8F0F0E1LL;
-RF24 radio(8, 9); 
-unsigned long lastRecvTime = 0;
+unsigned long lastCommandTime = 0;
+const unsigned long commandTimeout = 500; // 500ms timeout
+String lastCommand = "stop";
 
-struct PacketData
-{
-  byte xAxisValue;    
-  byte yAxisValue;
-} receiverData;
+void stopMotors() {
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+}
 
-//Right motor
-int enableRightMotor=5; 
-int rightMotorPin1=2;
-int rightMotorPin2=3;
-
-//Left motor
-int enableLeftMotor=6;
-int leftMotorPin1=4;
-int leftMotorPin2=7;
-
-
-void setup()
-{
-  pinMode(enableRightMotor,OUTPUT);
-  pinMode(rightMotorPin1,OUTPUT);
-  pinMode(rightMotorPin2,OUTPUT);
-  
-  pinMode(enableLeftMotor,OUTPUT);
-  pinMode(leftMotorPin1,OUTPUT);
-  pinMode(leftMotorPin2,OUTPUT);
-
-  rotateMotor(0,0); 
-    
+void setup() {
+  Serial.begin(9600);
   radio.begin();
-  radio.setDataRate(RF24_250KBPS);
-  radio.openReadingPipe(1,pipeIn);
-  radio.startListening(); //start the radio receiver 
+  radio.openReadingPipe(0, address);
+  radio.setPALevel(RF24_PA_LOW);
+  radio.startListening();
 
-  #ifdef PRINT_DEBUG
-    Serial.begin(115200);
-  #endif
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+  pinMode(ena, OUTPUT);
+  pinMode(enb, OUTPUT);
+
+  analogWrite(ena, 126); // Half speed
+  analogWrite(enb, 126);
 }
 
-void loop()
-{
-    int rightMotorSpeed=0;
-    int leftMotorSpeed=0;
-    // Check if RF is connected and packet is available 
-    if(radio.isChipConnected() && radio.available())
-    {
-      radio.read(&receiverData, sizeof(PacketData)); 
+void loop() {
+  // Check if data is available
+  if (radio.available()) {
+    char text[32] = "";
+    radio.read(&text, sizeof(text));
+    Serial.println("Received: " + String(text));
+    lastCommandTime = millis(); // ✅ Update time when command was received
+    lastCommand = String(text);
 
-      //We will receive value as 0 to 254. Center value is 127
-      
-      if (receiverData.yAxisValue >= 175)       //Move car Forward
-      {
-        rotateMotor(MAX_MOTOR_SPEED, MAX_MOTOR_SPEED);
-      }
-      else if (receiverData.yAxisValue <= 75)   //Move car Backward
-      {
-        rotateMotor(-MAX_MOTOR_SPEED, -MAX_MOTOR_SPEED);
-      }
-      else if (receiverData.xAxisValue >= 175)  //Move car Right
-      {
-        rotateMotor(-MAX_MOTOR_SPEED, MAX_MOTOR_SPEED);
-      }
-      else if (receiverData.xAxisValue <= 75)   //Move car Left
-      {
-        rotateMotor(MAX_MOTOR_SPEED, -MAX_MOTOR_SPEED);
-      }
-      else                                      //Stop the car
-      {
-        rotateMotor(0, 0);
-      }
-      lastRecvTime = millis();  
-      
-      #ifdef PRINT_DEBUG  
-        Serial.println(receiverData.xAxisValue);
-        Serial.println(receiverData.yAxisValue);      
-      #endif
+    if (lastCommand == "forward") {
+      digitalWrite(in1, HIGH);
+      digitalWrite(in2, LOW);
+      digitalWrite(in3, HIGH);
+      digitalWrite(in4, LOW);
+    } 
+    else if (lastCommand == "backward") {
+      digitalWrite(in1, LOW);
+      digitalWrite(in2, HIGH);
+      digitalWrite(in3, LOW);
+      digitalWrite(in4, HIGH);
     }
-    else
-    {
-      //Signal lost. Reset the motor to stop
-      unsigned long now = millis();
-      if ( now - lastRecvTime > SIGNAL_TIMEOUT ) 
-      {
-        rotateMotor(0, 0);   
-     }
-   }
-}
 
+    else if(lastCommand == "right") {
+      digitalWrite(in1, HIGH);
+      digitalWrite(in2, LOW);
+      digitalWrite(in3, LOW);
+      digitalWrite(in4, HIGH);
+    }
+    else if(lastCommand == "left") {
+      digitalWrite(in1, LOW);
+      digitalWrite(in2, HIGH);
+      digitalWrite(in3, HIGH);
+      digitalWrite(in4, LOW);
+    }
+    else if (lastCommand == "stop") {
+      stopMotors();
+    }
+  }
 
-void rotateMotor(int rightMotorSpeed, int leftMotorSpeed)
-{
-  if (rightMotorSpeed < 0)
-  {
-    digitalWrite(rightMotorPin1,LOW);
-    digitalWrite(rightMotorPin2,HIGH);    
+  // ✅ Always check timeout, even if no data
+  if (millis() - lastCommandTime > commandTimeout && lastCommand != "stop") {
+    Serial.println("Connection Lost. Stopping Motors.");
+    stopMotors();
+    lastCommand = "stop";
   }
-  else if (rightMotorSpeed > 0)
-  {
-    digitalWrite(rightMotorPin1,HIGH);
-    digitalWrite(rightMotorPin2,LOW);      
-  }
-  else
-  {
-    digitalWrite(rightMotorPin1,LOW);
-    digitalWrite(rightMotorPin2,LOW);      
-  }
-  
-  if (leftMotorSpeed < 0)
-  {
-    digitalWrite(leftMotorPin1,LOW);
-    digitalWrite(leftMotorPin2,HIGH);    
-  }
-  else if (leftMotorSpeed > 0)
-  {
-    digitalWrite(leftMotorPin1,HIGH);
-    digitalWrite(leftMotorPin2,LOW);      
-  }
-  else
-  {
-    digitalWrite(leftMotorPin1,LOW);
-    digitalWrite(leftMotorPin2,LOW);      
-  }  
-
-  analogWrite(enableRightMotor, abs(rightMotorSpeed));
-  analogWrite(enableLeftMotor, abs(leftMotorSpeed));    
 }
